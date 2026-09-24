@@ -1,0 +1,84 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'ap-south-1'
+        AWS_ACCOUNT_ID = '123456789012'
+        ECR_REPO = 'jenkins-demo'
+        APP_NAME = 'jenkins-demo'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        ECR_IMAGE = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Show Branch Info') {
+            steps {
+                sh '''
+                echo "Branch name: ${BRANCH_NAME}"
+                echo "Build number: ${BUILD_NUMBER}"
+                echo "Workspace: ${WORKSPACE}"
+                ls -la
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh 'python3 -m py_compile app.py'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh 'docker build -t ${APP_NAME}:${IMAGE_TAG} .'
+            }
+        }
+
+        stage('Docker Tag') {
+            steps {
+                sh 'docker tag ${APP_NAME}:${IMAGE_TAG} ${ECR_IMAGE}'
+            }
+        }
+
+        stage('Login to ECR') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                    docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                    '''
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh 'docker push ${ECR_IMAGE}'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Image pushed successfully: ${ECR_IMAGE}"
+        }
+
+        failure {
+            echo 'Pipeline failed. Check the failed stage and console output.'
+        }
+
+        always {
+            echo 'Pipeline execution completed.'
+        }
+    }
+}

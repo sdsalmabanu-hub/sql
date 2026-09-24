@@ -1,0 +1,104 @@
+name: GitHub Actions Practical
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      student_name:
+        description: "Student name for manual run practice"
+        required: false
+        default: "DevOps Student"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ROLE_ARN: arn:aws:iam::909969506392:role/GitHubActionsDay6EcrPushRole
+  ECR_REPOSITORY: github-actions-day6-demo
+
+jobs:
+  basic-ci:
+    name: Basic CI Demo
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show trigger information
+        run: |
+          echo "Workflow name: $GITHUB_WORKFLOW"
+          echo "Triggered by event: $GITHUB_EVENT_NAME"
+          echo "Branch or ref: $GITHUB_REF"
+          echo "Commit SHA: $GITHUB_SHA"
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Manual input student_name: ${{ inputs.student_name }}"
+
+      - name: Verify repository files
+        run: |
+          test -f README.md
+          test -f day4/README.md
+          test -f day6/Dockerfile
+          echo "Training notes and Day 6 Dockerfile are present."
+
+      - name: Compile Day 3 Python sample
+        run: |
+          python --version
+          python -m py_compile day3/projects/multibranch-ecr-demo/app.py
+
+      - name: Explain production step
+        run: |
+          echo "Next job will build a Docker image, tag it with the commit SHA, and push it to Amazon ECR."
+          echo "GitHub Actions will authenticate to AWS using OIDC, not long-term AWS access keys."
+
+  ecr-build-and-push:
+    name: Build, Tag, and Push Image to ECR
+    runs-on: ubuntu-latest
+    needs: basic-ci
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building image from day6/Dockerfile"
+          docker build -f day6/Dockerfile -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $REGISTRY/$ECR_REPOSITORY:latest
+          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$ECR_REPOSITORY:latest
+          echo "Pushed image: $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "Pushed image: $REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Show ECR image details
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          aws ecr describe-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --image-ids imageTag=$IMAGE_TAG \
+            --query 'imageDetails[0].{Tags:imageTags,Digest:imageDigest,PushedAt:imagePushedAt,Size:imageSizeInBytes}' \
+            --output table
